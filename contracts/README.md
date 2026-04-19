@@ -1,5 +1,4 @@
-# Web3 Payroll Streaming
-
+# StreamPay
 A production-grade Web3 payroll platform that enables real-time salary streaming using smart contracts.
 
 ## Overview
