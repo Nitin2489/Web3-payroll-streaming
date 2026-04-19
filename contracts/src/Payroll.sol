@@ -14,6 +14,9 @@ contract Payroll {
         uint256 ratePerSecond;
         uint256 startTime;
         uint256 withdrawn;
+        uint256 totalAmount;
+        uint256 pauseTime;
+        uint256 totalPausedTime;
         bool paused;
     }
 
@@ -22,14 +25,10 @@ contract Payroll {
     mapping(uint256 => Stream) public streams;
     mapping(address => uint256[]) public userStreams;
 
-    event StreamCreated(
-        uint256 indexed streamId,
-        address indexed employer,
-        address indexed employee,
-        uint256 ratePerSecond
-    );
-
-    event Withdrawn(uint256 indexed streamId, uint256 amount);
+    event StreamCreated(uint256 indexed id, address employer, address employee);
+    event Withdrawn(uint256 indexed id, uint256 amount);
+    event Paused(uint256 indexed id);
+    event Resumed(uint256 indexed id);
 
     function createStream(
         address employee,
@@ -53,49 +52,83 @@ contract Payroll {
             ratePerSecond: ratePerSecond,
             startTime: block.timestamp,
             withdrawn: 0,
+            totalAmount: monthlySalary,
+            pauseTime: 0,
+            totalPausedTime: 0,
             paused: false
         });
 
         userStreams[msg.sender].push(nextStreamId);
         userStreams[employee].push(nextStreamId);
 
-        emit StreamCreated(nextStreamId, msg.sender, employee, ratePerSecond);
+        emit StreamCreated(nextStreamId, msg.sender, employee);
 
         nextStreamId++;
     }
 
-    function withdraw(uint256 streamId) external {
-        Stream storage stream = streams[streamId];
+    function withdraw(uint256 id) external {
+        Stream storage s = streams[id];
 
-        require(msg.sender == stream.employee, "not employee");
-        require(!stream.paused, "stream paused");
+        require(msg.sender == s.employee, "not employee");
 
-        uint256 elapsed = block.timestamp - stream.startTime;
-        uint256 totalEarned = elapsed * stream.ratePerSecond;
-        uint256 withdrawable = totalEarned - stream.withdrawn;
+        uint256 withdrawable = getWithdrawable(id);
+        require(withdrawable > 0, "nothing");
 
-        require(withdrawable > 0, "nothing to withdraw");
-
-        stream.withdrawn += withdrawable;
+        s.withdrawn += withdrawable;
 
         require(
-            IERC20(stream.token).transfer(stream.employee, withdrawable),
+            IERC20(s.token).transfer(s.employee, withdrawable),
             "transfer failed"
         );
 
-        emit Withdrawn(streamId, withdrawable);
+        emit Withdrawn(id, withdrawable);
     }
 
-    function getWithdrawable(uint256 streamId) public view returns (uint256) {
-        Stream memory stream = streams[streamId];
+    function pause(uint256 id) external {
+        Stream storage s = streams[id];
 
-        if (stream.paused) return 0;
+        require(msg.sender == s.employer, "not employer");
+        require(!s.paused, "already paused");
 
-        uint256 elapsed = block.timestamp - stream.startTime;
-        uint256 totalEarned = elapsed * stream.ratePerSecond;
+        s.paused = true;
+        s.pauseTime = block.timestamp;
 
-        if (totalEarned <= stream.withdrawn) return 0;
+        emit Paused(id);
+    }
 
-        return totalEarned - stream.withdrawn;
+    function resume(uint256 id) external {
+        Stream storage s = streams[id];
+
+        require(msg.sender == s.employer, "not employer");
+        require(s.paused, "not paused");
+
+        uint256 pausedDuration = block.timestamp - s.pauseTime;
+        s.totalPausedTime += pausedDuration;
+
+        s.paused = false;
+
+        emit Resumed(id);
+    }
+
+    function getWithdrawable(uint256 id) public view returns (uint256) {
+        Stream memory s = streams[id];
+
+        uint256 effectiveTime;
+
+        if (s.paused) {
+            effectiveTime = s.pauseTime - s.startTime - s.totalPausedTime;
+        } else {
+            effectiveTime = block.timestamp - s.startTime - s.totalPausedTime;
+        }
+
+        uint256 totalEarned = effectiveTime * s.ratePerSecond;
+
+        if (totalEarned > s.totalAmount) {
+            totalEarned = s.totalAmount;
+        }
+
+        if (totalEarned <= s.withdrawn) return 0;
+
+        return totalEarned - s.withdrawn;
     }
 }
